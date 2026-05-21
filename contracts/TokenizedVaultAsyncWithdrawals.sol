@@ -556,7 +556,7 @@ contract TokenizedVaultAsyncWithdrawals is
       totalSupply() + 10 ** _decimalsOffset(),
       Math.Rounding.Floor
     );
-    uint256 feeAssets = _feeOnTotal(grossAssets, request.feeBpsAtRequest);
+    uint256 feeAssets = _feeOnRaw(grossAssets, request.feeBpsAtRequest);
     uint256 netAssets = grossAssets - feeAssets;
 
     require(grossAssets > 0, 'gross assets is zero');
@@ -662,7 +662,7 @@ contract TokenizedVaultAsyncWithdrawals is
 
   function previewRedeem(uint256 shares) public view override returns (uint256) {
     uint256 assets = super.previewRedeem(shares);
-    return assets - _feeOnTotal(assets, feeBps);
+    return assets - _feeOnRaw(assets, feeBps);
   }
 
   // =========================================================
@@ -688,7 +688,7 @@ contract TokenizedVaultAsyncWithdrawals is
   /// @notice Preview exit fee for a share count at current feeBps.
   function previewRedeemFee(uint256 shares) external view returns (uint256) {
     uint256 grossAssets = super.previewRedeem(shares);
-    return _feeOnTotal(grossAssets, feeBps);
+    return _feeOnRaw(grossAssets, feeBps);
   }
 
   /// @notice Preview exit fee for an asset amount at current feeBps.
@@ -714,7 +714,7 @@ contract TokenizedVaultAsyncWithdrawals is
       totalSupply() + 10 ** _decimalsOffset(),
       Math.Rounding.Floor
     );
-    feeAssets = _feeOnTotal(grossAssets, request.feeBpsAtRequest);
+    feeAssets = _feeOnRaw(grossAssets, request.feeBpsAtRequest);
     netAssets = grossAssets - feeAssets;
   }
 
@@ -886,12 +886,6 @@ contract TokenizedVaultAsyncWithdrawals is
 
   function _feeOnRaw(uint256 assets, uint256 feeBpsValue) internal pure returns (uint256) {
     return assets.mulDiv(feeBpsValue, MAX_BPS, Math.Rounding.Ceil);
-  }
-
-  /// @dev Fee-on-gross (fee-inclusive). fee = gross * bps / (bps + MAX_BPS).
-  ///      At 500 bps: fee ≈ 4.76% of gross, net ≈ 95.24%. Intentional design.
-  function _feeOnTotal(uint256 assets, uint256 feeBpsValue) internal pure returns (uint256) {
-    return assets.mulDiv(feeBpsValue, feeBpsValue + MAX_BPS, Math.Rounding.Ceil);
   }
 
   // =========================================================
