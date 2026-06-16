@@ -49,7 +49,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *
  * Redemption finalization (NOT gated by whenNotPaused):
  *   Operator calls finalizeRedeem(id) after custody funds the vault.
- *   Prices at pricePerShare locked at request time — NAV moves do not affect the payout.
+ *   Payout priced at live NAV (pricePerShare at finalization time). NAV at request is indicative only.
  */
 contract ManagedVault is
     ERC20Upgradeable,
@@ -93,7 +93,7 @@ contract ManagedVault is
         address owner;
         address receiver;
         uint256 shares;
-        uint256 priceAtRequest; // price locked at request time — used for finalization
+        uint256 priceAtRequest; // indicative price at request — audit trail only; finalization uses live NAV
         uint256 feeBpsAtRequest; // frozen at request — exit fee immune to future fee changes
         uint256 requestedAt;
         uint256 processedAt;
@@ -163,16 +163,23 @@ contract ManagedVault is
     uint256 public totalRedeemRejected;
     uint256 public totalDepositedAssets;
     uint256 public totalMintedShares;
-    uint256 public totalWithdrawnAssets;
+    uint256 public totalNetWithdrawnAssets;
     uint256 public totalRedeemedShares;
 
     mapping(uint256 => RedeemRequest) public redeemRequests;
 
     // =========================================================
+    // State — token metadata overrides
+    // =========================================================
+
+    string private _customName;
+    string private _customSymbol;
+
+    // =========================================================
     // Upgrade storage gap — reserve slots for future state vars
     // =========================================================
 
-    uint256[50] private __gap;
+    uint256[48] private __gap;
 
     // =========================================================
     // Events
@@ -354,6 +361,16 @@ contract ManagedVault is
         emit MaxNavChangeBpsUpdated(prev, newMax);
     }
 
+    function setTokenIdentifiers(string memory newName, string memory newSymbol)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(bytes(newName).length > 0, "name is empty");
+        require(bytes(newSymbol).length > 0, "symbol is empty");
+        _customName = newName;
+        _customSymbol = newSymbol;
+    }
+
     // =========================================================
     // Admin — whitelist toggle
     // =========================================================
@@ -494,16 +511,20 @@ contract ManagedVault is
      *
      * @dev NOT gated by whenNotPaused — existing queue must drain during a pause.
      *
-     *      Pricing: priceAtRequest locked at request time — NAV moves after queuing do not affect payout.
+     *      Pricing: live pricePerShare at finalization time. NAV at request time is indicative only.
      *
      *      Custody must fund the vault (transfer assets to this contract) before
      *      this call, otherwise availableAssets() check reverts.
+     *
+     *      NAV staleness guard enforced — stale price blocks finalization to prevent
+     *      settling redemptions against an outdated NAV.
      */
     function finalizeRedeem(uint256 id) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        require(_isNavFresh(), "nav is stale");
         RedeemRequest storage request = redeemRequests[id];
         require(request.status == RequestStatus.Pending, "redeem not pending");
 
-        uint256 grossAssets = request.shares.mulDiv(request.priceAtRequest, 10 ** decimals(), Math.Rounding.Floor);
+        uint256 grossAssets = request.shares.mulDiv(pricePerShare, 10 ** decimals(), Math.Rounding.Floor);
         uint256 feeAssets = _feeOnRaw(grossAssets, request.feeBpsAtRequest);
         uint256 netAssets = grossAssets - feeAssets;
 
@@ -515,7 +536,7 @@ contract ManagedVault is
         pendingRedeemCount -= 1;
         totalRedeemFinalized += 1;
         totalFeesAccrued += feeAssets;
-        totalWithdrawnAssets += netAssets;
+        totalNetWithdrawnAssets += netAssets;
         totalRedeemedShares += request.shares;
 
         _burn(address(this), request.shares);
@@ -560,6 +581,14 @@ contract ManagedVault is
 
     function decimals() public view override(ERC20Upgradeable, ERC4626Upgradeable) returns (uint8) {
         return super.decimals();
+    }
+
+    function name() public view override(ERC20Upgradeable, IERC20Metadata) returns (string memory) {
+        return bytes(_customName).length > 0 ? _customName : super.name();
+    }
+
+    function symbol() public view override(ERC20Upgradeable, IERC20Metadata) returns (string memory) {
+        return bytes(_customSymbol).length > 0 ? _customSymbol : super.symbol();
     }
 
     /**
@@ -639,7 +668,7 @@ contract ManagedVault is
     {
         RedeemRequest storage request = redeemRequests[id];
         require(request.status == RequestStatus.Pending, "redeem not pending");
-        grossAssets = request.shares.mulDiv(request.priceAtRequest, 10 ** decimals(), Math.Rounding.Floor);
+        grossAssets = request.shares.mulDiv(pricePerShare, 10 ** decimals(), Math.Rounding.Floor);
         feeAssets = _feeOnRaw(grossAssets, request.feeBpsAtRequest);
         netAssets = grossAssets - feeAssets;
     }
@@ -737,6 +766,7 @@ contract ManagedVault is
         return block.timestamp - priceUpdatedAt <= navStalenessThreshold;
     }
 
+    // =========================================================
     // =========================================================
     // Internal — fee math
     // =========================================================
